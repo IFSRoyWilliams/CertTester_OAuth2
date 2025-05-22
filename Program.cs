@@ -550,7 +550,108 @@ namespace CertTester_OAuth2
             return result;
         }
 
-        public static Dictionary<string,List<VariableValue>> Fetch(ODataClient Client)
+        private void Fetch(GetTagDataRequest request)
+        {
+            try
+            {
+                ConnectODataServer();
+
+                List<string> entityNames;
+                List<string> attributeNames = new List<string>();
+                List<dynamic> allData;
+
+                if (Settings.WideMode)
+                {
+                    GetEntityAndAttributeNames(request, out entityNames, out attributeNames);
+                }
+                else
+                {
+                    entityNames = request.DataObjects.Select(x => x.NativeName).ToList();
+                }
+                allData = BatchQuery(request, entityNames, attributeNames).Result;
+
+                var valuesForTag = ProcessOdataResponse(request, allData);
+                ProcessReturnData(request, valuesForTag);
+
+                //if we had a bad attribute we need to redo the fetch as we simply get a response back that would block all results from being returned
+                //unfortunately we don't get back a list of errors, but rather one at a time.
+                int badAttributes = 0;
+                bool badAttributeAdded = false;
+                if (BadAttributes.Count > 0)
+                {
+                    badAttributes = BadAttributes.Count;
+                    badAttributeAdded = true;
+                }
+                while (badAttributeAdded)
+                {
+                    allData.Clear();
+                    badAttributeAdded = false;
+                    RedoRequest(request, ref entityNames, ref attributeNames, ref valuesForTag);
+                    if (BadAttributes.Count > badAttributes)
+                    {
+                        badAttributes = BadAttributes.Count;
+                        badAttributeAdded = true;
+                    }
+                }
+
+                //if there was no data in a single point fetch it was dropped from the response because the top results weren't sufficient
+                //if there was only one data object and it was a single point fetch - we don't need to perform a rerun.
+                if (request.DataObjects.Count > 1 && request.EndTime == request.StartTime
+                    && request.DataObjects.Any(x => x.Value.Type != VariableType.Error && x.Value.Collection.Count == 0))
+                {
+                    RedoRequest(request, ref entityNames, ref attributeNames, ref valuesForTag, request.StartTime);
+
+                    //if we still have empty records we'll need to handle these individually. by this stage there should not be too many tags left unpopulated
+                    if (request.DataObjects.Any(x => x.Value == null || (x.Value.Type != VariableType.Error && x.Value.Collection.Count == 0)))
+                    {
+                        Dictionary<string, List<GetTagDataObject>> entitiesWithNoDatums = new Dictionary<string, List<GetTagDataObject>>();
+                        //group by entityName to minimize requests
+                        foreach (var dataObject in request.DataObjects.Where(x => x.Value == null || (x.Value.Type != VariableType.Error && x.Value.Collection.Count == 0)))
+                        {
+                            if (dataObject?.NativeName.IndexOf(Settings.Delimiter, StringComparison.CurrentCultureIgnoreCase) > 0)
+                            {
+                                var entityName = Settings.WideMode ? dataObject.NativeName.Split(Settings.Delimiter.ToCharArray())[0] : dataObject.NativeName;
+                                if (!entitiesWithNoDatums.ContainsKey(entityName))
+                                {
+                                    entitiesWithNoDatums.Add(entityName, new List<GetTagDataObject>());
+                                }
+                                entitiesWithNoDatums[entityName].Add(dataObject);
+                            }
+                        }
+
+                        foreach (string entityName in entitiesWithNoDatums.Keys)
+                        {
+                            GetTagDataRequest noDataSoRedoRequest = new GetTagDataRequest(request.StartTime, request.EndTime, request.SampleMethod, request.SampleInterval);
+                            entitiesWithNoDatums[entityName].ForEach(dataObject => noDataSoRedoRequest.AddDataObject(dataObject.Name, dataObject.NativeName));
+
+                            RedoRequest(noDataSoRedoRequest, ref entityNames, ref attributeNames, ref valuesForTag, request.StartTime);
+
+                            foreach (var retObj in noDataSoRedoRequest.DataObjects)
+                            {
+                                var requestObj = request.GetDataObject(retObj.NativeName);
+                                if (retObj.Value != null)
+                                {
+                                    requestObj.Value = retObj.Value;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                //if there was no data in a historic fetch - we need to do a single point spot fetch - the redo request will only perform a query if it finds a dataObject with no data.
+                if (request.EndTime != request.StartTime)
+                {
+                    RedoRequest(request, ref entityNames, ref attributeNames, ref valuesForTag, request.StartTime);
+                }
+            }
+            catch (Exception e)
+            {
+                HandleException(request, e);
+                return;
+            }
+        }
+
+        /*public static Dictionary<string,List<VariableValue>> Fetch(ODataClient Client)
         {
             Dictionary<string, List<VariableValue>> result = null;
             try
@@ -594,7 +695,7 @@ namespace CertTester_OAuth2
             }
 
             return result;
-        }
+        }*/
 
         /*
         //if there was no data in a single point fetch it was dropped from the response because the top results weren't sufficient

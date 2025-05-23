@@ -95,7 +95,7 @@ namespace CertTester_OAuth2
             RedudantTagDiscovery();
 
             //var allData = Test_TagDiscovery(Client);
-            var result = Fetch(Client);
+            var result = Test_Fetch(Client);
 
             Console.WriteLine();
             Console.WriteLine("Press any key to exit");
@@ -270,6 +270,22 @@ namespace CertTester_OAuth2
                 }
             }
             return allData;
+        }
+
+        public static object Test_Fetch(ODataClient Client)
+        {
+
+            GetTagDataRequest request = new GetTagDataRequest();
+            request.DataObjects.Add(new GetTagDataObject("DATA_SYNC_IN_LOB_SA13.SeqNo"));
+            request.DataObjects.Add(new GetTagDataObject("DATA_SYNC_IN_LOB_SA13.State"));
+            request.StartTime = Instant.FromDateTimeUtc(DateTime.UtcNow.AddDays(-100));
+            request.EndTime = Instant.FromDateTimeUtc(DateTime.UtcNow);
+            request.SampleInterval = Instant.FromUnixTimeSeconds(60);
+            request.SampleMethod = 0;
+
+            var result = Fetch(Client, request);
+
+            return result;
         }
 
         /// <summary>
@@ -550,17 +566,18 @@ namespace CertTester_OAuth2
             return result;
         }
 
-        private void Fetch(GetTagDataRequest request)
+        private static List<dynamic> Fetch(ODataClient Client, GetTagDataRequest request)
         {
+            List<dynamic> result = null;
             try
             {
-                ConnectODataServer();
+                //ConnectODataServer();
 
                 List<string> entityNames;
                 List<string> attributeNames = new List<string>();
                 List<dynamic> allData;
 
-                if (Settings.WideMode)
+                if (WideMode)
                 {
                     GetEntityAndAttributeNames(request, out entityNames, out attributeNames);
                 }
@@ -568,9 +585,11 @@ namespace CertTester_OAuth2
                 {
                     entityNames = request.DataObjects.Select(x => x.NativeName).ToList();
                 }
-                allData = BatchQuery(request, entityNames, attributeNames).Result;
+                allData = BatchQuery(Client, request, entityNames, attributeNames).Result;
+                Console.WriteLine(allData);
 
-                var valuesForTag = ProcessOdataResponse(request, allData);
+                result = allData;
+                /*var valuesForTag = ProcessOdataResponse(request, allData);
                 ProcessReturnData(request, valuesForTag);
 
                 //if we had a bad attribute we need to redo the fetch as we simply get a response back that would block all results from being returned
@@ -608,9 +627,9 @@ namespace CertTester_OAuth2
                         //group by entityName to minimize requests
                         foreach (var dataObject in request.DataObjects.Where(x => x.Value == null || (x.Value.Type != VariableType.Error && x.Value.Collection.Count == 0)))
                         {
-                            if (dataObject?.NativeName.IndexOf(Settings.Delimiter, StringComparison.CurrentCultureIgnoreCase) > 0)
+                            if (dataObject?.NativeName.IndexOf(Delimiter, StringComparison.CurrentCultureIgnoreCase) > 0)
                             {
-                                var entityName = Settings.WideMode ? dataObject.NativeName.Split(Settings.Delimiter.ToCharArray())[0] : dataObject.NativeName;
+                                var entityName = WideMode ? dataObject.NativeName.Split(Delimiter.ToCharArray())[0] : dataObject.NativeName;
                                 if (!entitiesWithNoDatums.ContainsKey(entityName))
                                 {
                                     entitiesWithNoDatums.Add(entityName, new List<GetTagDataObject>());
@@ -642,13 +661,21 @@ namespace CertTester_OAuth2
                 if (request.EndTime != request.StartTime)
                 {
                     RedoRequest(request, ref entityNames, ref attributeNames, ref valuesForTag, request.StartTime);
-                }
+                }*/
             }
             catch (Exception e)
             {
                 HandleException(request, e);
-                return;
+                return null;
             }
+            return result;
+        }
+
+        public static void HandleException(GetTagDataRequest request, Exception e)
+        {
+            Console.WriteLine("Issue with request: {0}", request);
+            Console.WriteLine("Exception: {0}", e.Message);
+            Console.WriteLine("Inner Exception: {0}", e.InnerException.Message);
         }
 
         /*public static Dictionary<string,List<VariableValue>> Fetch(ODataClient Client)

@@ -13,6 +13,10 @@ using System.Globalization;
 using System.Collections;
 using NodaTime;
 using System.Text;
+using System.Web;
+using System.Collections.Concurrent;
+using Simple.OData.Client.Extensions;
+using System.Threading;
 
 namespace CertTester_OAuth2
 {
@@ -278,7 +282,7 @@ namespace CertTester_OAuth2
             GetTagDataRequest request = new GetTagDataRequest();
             request.DataObjects.Add(new GetTagDataObject("DATA_SYNC_IN_LOB_SA13.SeqNo"));
             request.DataObjects.Add(new GetTagDataObject("DATA_SYNC_IN_LOB_SA13.State"));
-            request.StartTime = Instant.FromDateTimeUtc(DateTime.UtcNow.AddDays(-100));
+            request.StartTime = Instant.FromDateTimeUtc(DateTime.UtcNow.AddDays(-1000));
             request.EndTime = Instant.FromDateTimeUtc(DateTime.UtcNow);
             request.SampleInterval = Instant.FromUnixTimeSeconds(60);
             request.SampleMethod = 0;
@@ -452,9 +456,14 @@ namespace CertTester_OAuth2
         {
             bool attributeMode = false;
             List<IEnumerable<dynamic>> batchRequests = new List<IEnumerable<dynamic>>();
-            var startTime = request.StartTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
-            var endTime = request.EndTime.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+            var startTime = request.StartTime.ToDateTimeUtc().ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
+            var endTime = request.EndTime.ToDateTimeUtc().ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture);
             var batches = new ODataBatch(Client);
+
+            var start = DateTimeOffset.Parse(startTime);
+            startTime = start.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+            var end = DateTimeOffset.Parse(endTime);
+            endTime = end.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
 
             Dictionary<int, List<string>> batchIndex = new Dictionary<int, List<string>>();
 
@@ -489,7 +498,7 @@ namespace CertTester_OAuth2
                             attributes.Add("Confidence");
                         }*/
 
-                foreach (string attribute in attributeNames)
+                        foreach (string attribute in attributeNames)
                         {
                             attributes.Add(attribute);
                         }
@@ -501,18 +510,18 @@ namespace CertTester_OAuth2
                     uri = $"{baseURI}/{TableName}?$filter={{0}}&$orderby={TimeStampField}";
                     if (request.StartTime != request.EndTime)
                     {
-                        filter = $"{TimeStampField} le datetime'{endTime}' and {TimeStampField} gt datetime'{startTime}' and ({entitiesFilter})";
+                        filter = $"{TimeStampField} le {endTime} and {TimeStampField} gt {startTime} and ({entitiesFilter})";
                         batchRequest = Client
                             .For(TableName)
-                            //.Filter(filter)
+                            .Filter(filter)
                             .OrderBy(TimeStampField);
                     }
                     else
                     {
-                        filter = $"{TimeStampField} le datetime'{endTime}' and ({entitiesFilter})";
+                        filter = $"{TimeStampField} le {endTime} and ({entitiesFilter})";
                         batchRequest = Client
                             .For(TableName)
-                            //.Filter(filter)
+                            .Filter(filter)
                             .OrderByDescending(TimeStampField)
                             .Top(batchEntityNames.Count);
                         uri += $" desc&$top={batchEntityNames.Count}";
@@ -523,7 +532,32 @@ namespace CertTester_OAuth2
                         uri += $"&$select={string.Join(",", attributes)}";
                     }
 
-                    batches += async c => batchRequests.Add(await batchRequest.FindEntriesAsync().ConfigureAwait(true));
+                    var a = uri.Split('{')[0];
+                    var b = uri.Split('{')[1].Split('}')[1];
+                    uri = a + filter + b;
+                    //var relativeUri = new Uri(uri, UriKind.Relative);
+
+                    /*batches += async c =>
+                    {
+                        var entries = await c
+                            .FindEntriesAsync(uri);
+                        batchRequests.Add(entries);
+                    };*/
+
+                    /*batches += async c =>
+                    {
+                        var uri = new Uri(
+                            "ApplicationMessageSet?$filter=CreatedDate le 2025-05-22T19:17:50Z and CreatedDate gt 2022-08-26T19:17:50Z and (Queue eq 'DATA_SYNC_IN_LOB_SA13')&$orderby=CreatedDate&$select=Queue,CreatedDate,SeqNo,State",
+                            UriKind.Relative
+                        );
+
+                        var entries = await c.FindEntriesAsync(uri);
+                        batchRequests.Add(entries);
+                    };*/
+
+                    var entries = await Client.FindEntriesAsync(uri).ConfigureAwait(true);
+                    batchRequests.Add(entries);
+
                     verboseLog.Append(String.Format(uri, filter));
 
                     batchIndex.Add(batchCount, batchEntityNames);
@@ -546,11 +580,11 @@ namespace CertTester_OAuth2
             }
             catch (WebRequestException ex)
             {
-                return null;// HandleOdataBadResponse(request, ex);
+                HandleOdataBadResponse(request, ex);
             }
             catch (Exception ex)
             {
-                return null;// HandleException(request, ex);
+                HandleException(request, ex);
             }
 
             List<dynamic> result = new List<dynamic>();
@@ -558,6 +592,7 @@ namespace CertTester_OAuth2
             GetTagDataRequest singlePointSpotFetch = null;
             foreach (var retVal in batchRequests)
             {
+                //Dictionary<string, object> rv = retVal.ToDictionary(new Dictionary<string, object>());
                 result.AddRange(retVal);
                 ++i;
             }
@@ -571,8 +606,6 @@ namespace CertTester_OAuth2
             List<dynamic> result = null;
             try
             {
-                //ConnectODataServer();
-
                 List<string> entityNames;
                 List<string> attributeNames = new List<string>();
                 List<dynamic> allData;
@@ -589,10 +622,11 @@ namespace CertTester_OAuth2
                 Console.WriteLine(allData);
 
                 result = allData;
-                /*var valuesForTag = ProcessOdataResponse(request, allData);
+                var valuesForTag = ProcessOdataResponse(request, allData);
                 ProcessReturnData(request, valuesForTag);
+                Console.WriteLine(request);
 
-                //if we had a bad attribute we need to redo the fetch as we simply get a response back that would block all results from being returned
+                /*//if we had a bad attribute we need to redo the fetch as we simply get a response back that would block all results from being returned
                 //unfortunately we don't get back a list of errors, but rather one at a time.
                 int badAttributes = 0;
                 bool badAttributeAdded = false;
@@ -820,7 +854,7 @@ namespace CertTester_OAuth2
                 allData = BatchQuery(Client, noDataSoRedoRequest, entityNames, attributeNames).Result;
                 valuesForTag = ProcessOdataResponse(noDataSoRedoRequest, allData);
                 //when processing the return data we reapply the original endTime so that if it was a historic fetch we correctly populate the sample interval data points.	
-                ProcessReturnData(Client, noDataSoRedoRequest, valuesForTag, request.EndTime);
+                ProcessReturnData(noDataSoRedoRequest, valuesForTag, request.EndTime);
 
                 foreach (var dataObject in noDataSoRedoRequest.DataObjects)
                 {
@@ -835,7 +869,7 @@ namespace CertTester_OAuth2
         /// <param name="request"></param>
         /// <param name="valuesForTag"></param>
         /// <param name="requestEndTime">end time is required for redo-requests for missing datapoints is a single point fetch, but may be from a historic fetch.</param>
-        public static void ProcessReturnData(ODataClient Client, GetTagDataRequest request, Dictionary<string, List<VariableValue>> valuesForTag, Instant? requestEndTime = null)
+        public static void ProcessReturnData(GetTagDataRequest request, Dictionary<string, List<VariableValue>> valuesForTag, Instant? requestEndTime = null)
         {
             Console.WriteLine("--------ProcessReturnData--------");
             if (!requestEndTime.HasValue)
@@ -1040,7 +1074,8 @@ namespace CertTester_OAuth2
             {
                 try
                 {
-                    foreach (Dictionary<string, object> retVal in odataResponse)
+                    var count = 0;
+                    foreach (Dictionary<string, object> retVal in odataResponse.Where(x => x[TimeStampField] >= request.StartTime.ToDateTimeOffset() && x[TimeStampField] <= request.EndTime.ToDateTimeOffset()))
                     {
                         string name = (string)retVal[NameField];
                         DateTime timestampDT;
@@ -1143,6 +1178,7 @@ namespace CertTester_OAuth2
                                 valuesForTag.Add(tagName, new List<VariableValue>() { vv });
                             }
                         }
+                        Console.WriteLine("[{0}]: {1}: {2}", count++, valuesForTag.Last().Key, valuesForTag.Last().Value.Last().val);
                     }
                 }
                 catch (Exception ex)
@@ -1188,6 +1224,85 @@ namespace CertTester_OAuth2
                 if (!attributeNames.Contains(entity[1]))// && !BadAttributes.Contains(entity[1]))
                 {
                     attributeNames.Add(entity[1]);
+                }
+            }
+        }
+
+        public static ConcurrentBag<string> _badAttributes;
+        public static ConcurrentBag<string> BadAttributes
+        {
+            get
+            {
+                if (_badAttributes == null)
+                { _badAttributes = new ConcurrentBag<string>(); }
+                return _badAttributes;
+            }
+        }
+
+        public static void HandleOdataBadResponse(GetTagDataRequest request, WebRequestException ex)
+        {
+            /*if (ex.Code == HttpStatusCode.Unauthorized)
+            {
+                Logger.Error("", "Error Code 401: Unauthorised. Token may have expired, attempting to refresh...");
+                ConnectODataServer(true);
+                return;
+            }*/
+
+            //note: energysys returns a slightly different response to the test adaptor
+
+            string[] badAttributeStrings =
+                { "Could not find property with name: '", //energysys
+				"Could not find a property named '" }; //odataMock
+
+            foreach (string badAttributeString in badAttributeStrings)
+            {
+                var i = ex.Response.IndexOf(badAttributeString, StringComparison.CurrentCultureIgnoreCase);
+                if (i >= 0)
+                {
+                    var s = ex.Response.Substring(i);
+                    string badAttribute = s.Split('\'')[1];
+
+                    foreach (var dataObject in request.DataObjects)
+                    {
+                        //we only want to attach an error to the bad attributes.
+                        if (String.Equals(dataObject.NativeName.Split(Delimiter.ToCharArray())[1], badAttribute, StringComparison.CurrentCultureIgnoreCase))
+                        {
+                            var error = $"The tag {dataObject.NativeName} returned a bad response. The field {badAttribute} does not exist in the Odata Service";
+                            Console.WriteLine($"{error}{Environment.NewLine}URL: {HttpUtility.UrlDecode(ex.RequestUri.AbsoluteUri)}{Environment.NewLine}Response: {ex.Response}");
+                            //attach the error to the queried tag
+                            if (dataObject != null)
+                            {
+                                dataObject.Value = new VariableValue(new Exception(error));
+                            }
+                        }
+                    }
+                    if (!BadAttributes.Contains(badAttribute)
+                        && !String.Equals(badAttribute, NameField, StringComparison.CurrentCultureIgnoreCase)
+                        && !String.Equals(badAttribute, TimeStampField, StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        BadAttributes.Add(badAttribute);
+                        return;
+                    }
+                }
+            }
+
+            //if we haven't returned we didn't find the 'bad attribute' message we're looking for.
+            foreach (var dataObject in request.DataObjects)
+            {
+                var error = $"The tag {dataObject.NativeName} returned a bad response that was unhandled. See Logger for further information.";
+                try
+                {
+                    Console.WriteLine($"{error}{Environment.NewLine}URL: {HttpUtility.UrlDecode(ex.RequestUri.AbsoluteUri)}{Environment.NewLine}Response: {ex.Response}");
+                }
+                catch(Exception ee)
+                {
+                    Console.WriteLine(ee);
+                    return;
+                }
+
+                if (dataObject != null)
+                {
+                    dataObject.Value = new VariableValue(new Exception(error));
                 }
             }
         }
